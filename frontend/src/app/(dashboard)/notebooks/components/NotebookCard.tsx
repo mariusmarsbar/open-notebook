@@ -42,7 +42,7 @@ export function NotebookCard({ notebook }: NotebookCardProps) {
 
   return (
     <>
-      <Card 
+      <Card
         className="group card-hover"
         onClick={handleCardClick}
         style={{ cursor: 'pointer' }}
@@ -59,7 +59,7 @@ export function NotebookCard({ notebook }: NotebookCardProps) {
                   </Badge>
                 )}
               </div>
-              
+
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -99,17 +99,17 @@ export function NotebookCard({ notebook }: NotebookCardProps) {
               </DropdownMenu>
             </div>
           </CardHeader>
-          
+
           <CardContent>
             <CardDescription className="line-clamp-2 text-sm">
               {notebook.description || t('chat.noDescription')}
             </CardDescription>
 
             <div className="mt-3 text-xs text-muted-foreground">
-              {t('common.updated').replace('{time}', formatDistanceToNow(new Date(notebook.updated), { 
+              {t('common.updated', { time: formatDistanceToNow(new Date(notebook.updated), {
                 addSuffix: true,
                 locale: getDateLocale(language)
-              }))}
+              }) })}
             </div>
 
             {/* Item counts footer */}

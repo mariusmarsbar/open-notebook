@@ -11,6 +11,7 @@ Key functions:
 Environment Variables:
     OPEN_NOTEBOOK_CHUNK_SIZE: Maximum chunk size in tokens (default: 400)
     OPEN_NOTEBOOK_CHUNK_OVERLAP: Overlap between chunks in tokens (default: 15% of CHUNK_SIZE)
+    OPEN_NOTEBOOK_MIN_CHUNK_SIZE: Minimum chunk size in tokens (default: 5)
 """
 
 import os
@@ -84,13 +85,42 @@ def _get_chunk_overlap(chunk_size: int) -> int:
     return int(chunk_size * 0.15)
 
 
+def _get_min_chunk_size() -> int:
+    """Get minimum chunk size from environment variable or use default.
+
+    Chunks below this token count are dropped. Some splitters (notably the
+    HTML header splitter on complex pages) can emit single-character or
+    punctuation-only chunks that produce useless or null embeddings —
+    llama.cpp's OpenAI-compatible endpoint, for example, returns null vector
+    elements for such inputs and crashes downstream parsing.
+    """
+    raw = os.getenv("OPEN_NOTEBOOK_MIN_CHUNK_SIZE")
+    if raw is None:
+        return 5
+    try:
+        value = int(raw)
+        if value < 0:
+            logger.warning(
+                f"OPEN_NOTEBOOK_MIN_CHUNK_SIZE ({value}) cannot be negative. Using 0."
+            )
+            return 0
+        return value
+    except ValueError:
+        logger.warning(
+            f"Invalid OPEN_NOTEBOOK_MIN_CHUNK_SIZE value: '{raw}'. Using default: 5"
+        )
+        return 5
+
+
 # Constants (computed at import time from environment variables)
 CHUNK_SIZE = _get_chunk_size()
 CHUNK_OVERLAP = _get_chunk_overlap(CHUNK_SIZE)
+MIN_CHUNK_SIZE = _get_min_chunk_size()
 HIGH_CONFIDENCE_THRESHOLD = 0.8  # Threshold for heuristics to override extension
 
 logger.debug(
-    f"Chunking configuration: CHUNK_SIZE={CHUNK_SIZE}, CHUNK_OVERLAP={CHUNK_OVERLAP}"
+    f"Chunking configuration: CHUNK_SIZE={CHUNK_SIZE}, "
+    f"CHUNK_OVERLAP={CHUNK_OVERLAP}, MIN_CHUNK_SIZE={MIN_CHUNK_SIZE}"
 )
 
 
@@ -416,26 +446,26 @@ def chunk_text(
     logger.debug(f"Chunking text with content type: {content_type.value}")
 
     # Select appropriate splitter
+    chunks: List[str]
     if content_type == ContentType.HTML:
-        splitter = _get_html_splitter()
+        html_splitter = _get_html_splitter()
         # HTML splitter returns Document objects
-        docs = splitter.split_text(text)
+        docs = html_splitter.split_text(text)
         chunks = [
             doc.page_content if hasattr(doc, "page_content") else str(doc)
             for doc in docs
         ]
     elif content_type == ContentType.MARKDOWN:
-        splitter = _get_markdown_splitter()
+        md_splitter = _get_markdown_splitter()
         # Markdown splitter returns Document objects
-        docs = splitter.split_text(text)
+        docs = md_splitter.split_text(text)
         chunks = [
             doc.page_content if hasattr(doc, "page_content") else str(doc)
             for doc in docs
         ]
     else:
         # Plain text - use recursive splitter directly
-        splitter = _get_plain_splitter()
-        chunks = splitter.split_text(text)
+        chunks = _get_plain_splitter().split_text(text)
 
     # Apply secondary chunking if needed (for HTML/Markdown that may produce large chunks)
     if content_type in (ContentType.HTML, ContentType.MARKDOWN):
@@ -443,6 +473,22 @@ def chunk_text(
 
     # Filter out empty chunks
     chunks = [c.strip() for c in chunks if c and c.strip()]
+
+    # Drop chunks below the minimum token threshold. These are typically
+    # punctuation or single-character fragments left over from header-based
+    # splitters; embedding them is wasteful and some providers return null
+    # vector elements for such inputs (which then crash response parsing).
+    # Only filter when more than one chunk exists and at least one chunk
+    # would survive — never return an empty list because of this filter.
+    if MIN_CHUNK_SIZE > 0 and len(chunks) > 1:
+        kept = [c for c in chunks if token_count(c) >= MIN_CHUNK_SIZE]
+        if kept:
+            dropped = len(chunks) - len(kept)
+            if dropped > 0:
+                logger.debug(
+                    f"Dropped {dropped} chunk(s) below MIN_CHUNK_SIZE={MIN_CHUNK_SIZE} tokens"
+                )
+            chunks = kept
 
     logger.debug(f"Created {len(chunks)} chunks from {text_tokens} tokens")
     return chunks
